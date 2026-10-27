@@ -273,30 +273,37 @@ async def maintenance_ask(request: MaintenanceQuestion):
     Ask the GenAI maintenance assistant a question.
 
     Uses RAG with Chroma + Sentence Transformers. LLM optional.
-    Embedding model loads lazily on first call (~300 MB, takes a few seconds).
+    The embedding model loads lazily on first call (~300 MB, 30-60s on cloud).
+    Runs in a thread pool executor so FastAPI's event loop is never blocked.
     Gracefully degrades if vector store or LLM is unavailable.
     """
-    try:
-        from src.maintenance_rag import ask
-        result = ask(
-            question=request.question,
-            prediction_context=request.prediction_context,
-            sensor_context=request.sensor_context,
-        )
-    except (MemoryError, Exception) as e:
-        logger.error(f"RAG error: {type(e).__name__}: {e}")
-        # Return a graceful fallback instead of a 500 crash
-        result = {
-            "question": request.question,
-            "answer": (
-                "The RAG assistant encountered an error and could not process your question. "
-                f"Error: {type(e).__name__}. "
-                "This may be a temporary memory issue on the free hosting tier. Please retry."
-            ),
-            "sources": [],
-            "llm_available": False,
-            "latency_ms": 0.0,
-        }
+    import asyncio
+    from functools import partial
+
+    def _ask_sync():
+        try:
+            from src.maintenance_rag import ask
+            return ask(
+                question=request.question,
+                prediction_context=request.prediction_context,
+                sensor_context=request.sensor_context,
+            )
+        except (MemoryError, Exception) as e:
+            logger.error(f"RAG error: {type(e).__name__}: {e}")
+            return {
+                "question": request.question,
+                "answer": (
+                    "The RAG assistant encountered an error and could not process your question. "
+                    f"Error: {type(e).__name__}. "
+                    "This may be a temporary memory issue on the free hosting tier. Please retry."
+                ),
+                "sources": [],
+                "llm_available": False,
+                "latency_ms": 0.0,
+            }
+
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, _ask_sync)
 
     return MaintenanceAnswer(
         question=result["question"],
@@ -305,6 +312,32 @@ async def maintenance_ask(request: MaintenanceQuestion):
         llm_available=result.get("llm_available", False),
         latency_ms=result.get("latency_ms", 0.0),
     )
+
+
+@app.get("/maintenance/warmup", tags=["GenAI Assistant"])
+async def maintenance_warmup():
+    """
+    Trigger background loading of the SentenceTransformer embedding model.
+    Returns 202 Accepted immediately — the model loads asynchronously.
+    Call this when the GenAI page opens so the model is ready by the time
+    the user submits their first question.
+    """
+    import asyncio
+
+    def _warmup():
+        try:
+            from src.maintenance_rag import _get_embedding_model
+            _get_embedding_model()
+            logger.info("[warmup] Embedding model ready.")
+        except Exception as e:
+            logger.warning(f"[warmup] Model pre-load failed (non-fatal): {e}")
+
+    # Fire and forget — don't await
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, _warmup)
+
+    return {"status": "warming_up", "message": "Embedding model loading in background."}
+
 
 
 @app.get("/history", tags=["History"])

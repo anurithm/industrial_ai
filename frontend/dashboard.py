@@ -34,7 +34,13 @@ def _get_api_base() -> str:
     return os.getenv("API_BASE_URL", "http://localhost:8000")
 
 API_BASE = _get_api_base()
-API_TIMEOUT = 30
+API_TIMEOUT = 30       # General endpoints: /predict, /anomaly, /explain, /history
+RAG_TIMEOUT = 120      # /maintenance/ask: first call loads SentenceTransformer (~60s on cloud)
+                       # Override via RAG_TIMEOUT env var
+try:
+    RAG_TIMEOUT = int(os.getenv("RAG_TIMEOUT", str(RAG_TIMEOUT)))
+except ValueError:
+    pass
 REPORTS_DIR = Path(__file__).parent.parent / "reports"
 PROCESSED_DIR = Path(__file__).parent.parent / "data" / "processed"
 RAW_DIR = Path(__file__).parent.parent / "data" / "raw"
@@ -153,6 +159,52 @@ def api_post(endpoint: str, payload: Dict) -> Optional[Dict]:
     except Exception as e:
         st.error(f"❌ Request failed: {e}")
         return None
+
+
+def api_post_rag(payload: dict):
+    """
+    POST to /maintenance/ask with RAG_TIMEOUT (default 120s) instead of
+    the global API_TIMEOUT. The first call lazily loads SentenceTransformer
+    (~300MB) on the cloud server which takes 30-60s; this longer timeout
+    prevents the dashboard from giving up before the model is ready.
+    """
+    try:
+        r = requests.post(
+            f"{API_BASE}/maintenance/ask",
+            json=payload,
+            timeout=(10, RAG_TIMEOUT),  # (connect_timeout, read_timeout)
+        )
+        r.raise_for_status()
+        return r.json()
+    except requests.ConnectionError:
+        _show_offline_banner()
+        return None
+    except requests.Timeout:
+        st.warning(
+            "⏱️ The GenAI assistant took too long to respond. "
+            f"(timeout: {RAG_TIMEOUT}s) "
+            "On first use the AI model loads into memory on the cloud server. "
+            "**Please wait 30–60 seconds and try again** — subsequent questions will be faster."
+        )
+        return None
+    except requests.HTTPError as e:
+        try:
+            detail = r.json().get("detail", str(e))
+        except Exception:
+            detail = str(e)
+        st.error(f"❌ Assistant error ({r.status_code}): {detail}")
+        return None
+    except Exception as e:
+        st.error(f"❌ Request failed: {e}")
+        return None
+
+
+def api_warmup_rag() -> None:
+    """Fire-and-forget GET to /maintenance/warmup to pre-load the embedding model."""
+    try:
+        requests.get(f"{API_BASE}/maintenance/warmup", timeout=5)
+    except Exception:
+        pass  # Warmup is best-effort; any failure is harmless
 
 
 def check_api_health():
@@ -667,6 +719,10 @@ elif page == "🧠 Explainable AI":
         unsafe_allow_html=True,
     )
 
+    # Pre-warm the embedding model in the background.
+    # Returns immediately (5s connect timeout); the server loads the model async.
+    api_warmup_rag()
+
     pred = st.session_state.last_prediction
     sensor = st.session_state.last_sensor
 
@@ -874,9 +930,11 @@ elif page == "💬 GenAI Assistant":
         send_btn = st.form_submit_button("Send ↵", type="primary", use_container_width=True)
 
     if send_btn and question.strip():
-        with st.spinner("Retrieving documentation and generating answer..."):
-            result = api_post(
-                "/maintenance/ask",
+        with st.spinner(
+            "\U0001f9e0 Generating answer\u2026 "
+            "(First use may take 30\u201360 s while the AI model loads on the cloud server)"
+        ):
+            result = api_post_rag(
                 {
                     "question": question,
                     "prediction_context": pred,
