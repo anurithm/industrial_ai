@@ -318,11 +318,16 @@ async def maintenance_ask(request: MaintenanceQuestion):
 async def maintenance_warmup():
     """
     Trigger background loading of the SentenceTransformer embedding model.
-    Returns 202 Accepted immediately — the model loads asynchronously.
+    Returns immediately — the model loads asynchronously in a thread pool.
     Call this when the GenAI page opens so the model is ready by the time
     the user submits their first question.
     """
     import asyncio
+    from src.maintenance_rag import _embedding_model_state
+
+    # If already loaded or loading, don't start another thread
+    if _embedding_model_state in ("ready", "loading"):
+        return {"status": _embedding_model_state, "message": f"Embedding model is {_embedding_model_state}."}
 
     def _warmup():
         try:
@@ -332,11 +337,21 @@ async def maintenance_warmup():
         except Exception as e:
             logger.warning(f"[warmup] Model pre-load failed (non-fatal): {e}")
 
-    # Fire and forget — don't await
     loop = asyncio.get_event_loop()
     loop.run_in_executor(None, _warmup)
 
     return {"status": "warming_up", "message": "Embedding model loading in background."}
+
+
+@app.get("/maintenance/status", tags=["GenAI Assistant"])
+async def maintenance_status():
+    """
+    RAG readiness report — safe to poll from the dashboard.
+    Returns model state, vector store health, and LLM provider config.
+    Never exposes API keys or secrets.
+    """
+    from src.maintenance_rag import rag_status
+    return rag_status()
 
 
 

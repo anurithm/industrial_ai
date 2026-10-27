@@ -128,12 +128,15 @@ def test_embedding_model_singleton(monkeypatch):
     """_get_embedding_model() loads the model only once (singleton pattern)."""
     import src.maintenance_rag as rag_mod
 
-    # Reset the singleton for this test
-    original = rag_mod._embedding_model
+    # Save and reset ALL singleton state so this test is independent
+    original_model = rag_mod._embedding_model
+    original_state = rag_mod._embedding_model_state
+    original_error = rag_mod._embedding_model_error
     rag_mod._embedding_model = None
+    rag_mod._embedding_model_state = "not_loaded"
+    rag_mod._embedding_model_error = None
 
     load_count = [0]
-    original_init = None
 
     try:
         import sentence_transformers
@@ -149,7 +152,11 @@ def test_embedding_model_singleton(monkeypatch):
         m2 = rag_mod._get_embedding_model()
         assert m1 is m2, "Singleton must return the same instance"
         assert load_count[0] == 1, f"Model loaded {load_count[0]} times — expected 1"
+        assert rag_mod._embedding_model_state == "ready"
     except ImportError:
         pytest.skip("sentence_transformers not installed")
     finally:
-        rag_mod._embedding_model = original
+        # Restore original state so other tests are unaffected
+        rag_mod._embedding_model = original_model
+        rag_mod._embedding_model_state = original_state
+        rag_mod._embedding_model_error = original_error

@@ -5,13 +5,16 @@ Supports OpenRouter and Ollama as LLM providers.
 Memory-efficiency notes (Render free tier):
 - SentenceTransformer is loaded lazily on first use and cached as a singleton.
   It is NOT imported or loaded at module import time or during API startup.
-- Chroma client is also created lazily per call (stateless PersistentClient).
+- The model is PRE-DOWNLOADED in the Dockerfile so no network call occurs at runtime.
+- Chroma client is created lazily per call (stateless PersistentClient).
 - Use rag_ready() to check availability without loading anything heavy.
+- Use rag_status() for a full readiness report (model state + store state).
 """
 import logging
+import os
 import time
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Event
 from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -23,30 +26,58 @@ from src.config import (
     OLLAMA_BASE_URL, OLLAMA_MODEL,
 )
 
+# LLM call timeouts (seconds)
+OPENROUTER_CONNECT_TIMEOUT = 10
+OPENROUTER_READ_TIMEOUT = int(os.getenv("OPENROUTER_TIMEOUT", "30"))
+
 # ── Lazy singleton for the embedding model ────────────────────────────────────
-# Loading SentenceTransformer uses ~300 MB RAM. We load it once on demand and
-# cache it for the lifetime of the process — never at module import time.
+# The model is pre-downloaded into the Docker image at /app/.sentence_transformers.
+# Loading it into RAM is fast (~2-5s). Protected by a lock so concurrent callers
+# wait for the first load rather than triggering duplicate loads.
 _embedding_model = None
 _embedding_model_lock = Lock()
+_embedding_model_state = "not_loaded"  # not_loaded | loading | ready | error
+_embedding_model_error: Optional[str] = None
 
 
 def _get_embedding_model():
-    """Return the cached SentenceTransformer, loading it once on first call."""
-    global _embedding_model
-    if _embedding_model is None:
-        with _embedding_model_lock:
-            if _embedding_model is None:
-                logger.info(f"[RAG] Loading embedding model '{EMBEDDING_MODEL}' (first use) ...")
-                from sentence_transformers import SentenceTransformer
-                _embedding_model = SentenceTransformer(EMBEDDING_MODEL)
-                logger.info("[RAG] Embedding model loaded and cached.")
+    """
+    Return the cached SentenceTransformer, loading it once on first call.
+    Thread-safe singleton — concurrent callers block until load completes.
+    State is tracked so rag_status() can report readiness without loading.
+    """
+    global _embedding_model, _embedding_model_state, _embedding_model_error
+
+    if _embedding_model_state == "ready":
+        return _embedding_model
+
+    with _embedding_model_lock:
+        # Double-check after acquiring lock
+        if _embedding_model_state == "ready":
+            return _embedding_model
+
+        _embedding_model_state = "loading"
+        t0 = time.perf_counter()
+        logger.info(f"[RAG] Loading embedding model '{EMBEDDING_MODEL}' ...")
+        try:
+            from sentence_transformers import SentenceTransformer
+            _embedding_model = SentenceTransformer(EMBEDDING_MODEL)
+            elapsed = time.perf_counter() - t0
+            _embedding_model_state = "ready"
+            logger.info(f"[RAG] Embedding model loaded in {elapsed:.1f}s (dim={_embedding_model.get_embedding_dimension()})")
+        except Exception as e:
+            _embedding_model_state = "error"
+            _embedding_model_error = str(e)
+            logger.error(f"[RAG] Embedding model load FAILED in {time.perf_counter()-t0:.1f}s: {e}")
+            raise
+
     return _embedding_model
 
 
 def rag_ready() -> bool:
     """
-    Check if the Chroma vector store exists and has data — WITHOUT loading
-    any heavy models. Safe to call from /health at startup.
+    Lightweight check: does the Chroma vector store exist with data?
+    Does NOT load any models. Safe to call from /health at startup.
     """
     db_path = CHROMA_DIR / "chroma.sqlite3"
     if not db_path.exists():
@@ -62,6 +93,33 @@ def rag_ready() -> bool:
     except Exception as e:
         logger.debug(f"[RAG] rag_ready() check failed: {e}")
         return False
+
+
+def rag_status() -> Dict:
+    """
+    Full readiness report — safe to expose via /maintenance/status.
+    Does NOT load the model or expose any secrets.
+    """
+    store_ready = rag_ready()
+    try:
+        if store_ready:
+            import chromadb
+            client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+            col = client.get_collection(CHROMA_COLLECTION)
+            chunk_count = col.count()
+        else:
+            chunk_count = 0
+    except Exception:
+        chunk_count = 0
+
+    return {
+        "vector_store_ready": store_ready,
+        "chunk_count": chunk_count,
+        "embedding_model_state": _embedding_model_state,  # not_loaded|loading|ready|error
+        "embedding_model_error": _embedding_model_error if _embedding_model_state == "error" else None,
+        "llm_provider": LLM_PROVIDER,
+        "llm_configured": bool(OPENROUTER_API_KEY) if LLM_PROVIDER == "openrouter" else (LLM_PROVIDER == "ollama"),
+    }
 
 
 # ── Text utilities ────────────────────────────────────────────────────────────
@@ -102,9 +160,10 @@ def build_vector_store(force_rebuild: bool = False):
     Idempotent: skips if collection exists and force_rebuild is False.
 
     Run this locally then commit chroma_db/ to Git so Render never
-    needs to build it at runtime (saves ~300 MB startup RAM).
+    needs to build it at runtime.
     """
     import chromadb
+    t0 = time.perf_counter()
 
     client = chromadb.PersistentClient(path=str(CHROMA_DIR))
     existing = [c.name for c in client.list_collections()]
@@ -117,7 +176,7 @@ def build_vector_store(force_rebuild: bool = False):
         client.delete_collection(CHROMA_COLLECTION)
 
     collection = client.create_collection(CHROMA_COLLECTION)
-    embedding_model = _get_embedding_model()  # Uses the singleton
+    embedding_model = _get_embedding_model()
 
     doc_files = (
         list(DOCS_DIR.glob("*.txt"))
@@ -143,40 +202,55 @@ def build_vector_store(force_rebuild: bool = False):
                 metadatas=[{"source": doc_path.name, "chunk": i}],
             )
 
-    logger.info(f"[RAG] Vector store built: {collection.count()} chunks indexed")
+    logger.info(f"[RAG] Vector store built: {collection.count()} chunks in {time.perf_counter()-t0:.1f}s")
     return collection
 
 
 def retrieve(query: str, n_results: int = RAG_N_RESULTS) -> List[Dict]:
     """
     Retrieve relevant document chunks for a query.
-    Loads the embedding model lazily (singleton — loaded once, cached).
+    Embedding model is a singleton — loaded once, then cached.
 
-    Returns:
-        List of passages with text, source, and relevance score.
-        Returns empty list if vector store is unavailable.
+    Structured timing logs emitted at each stage for debugging.
+    Returns empty list if vector store is unavailable.
     """
     import chromadb
 
+    t0 = time.perf_counter()
+    logger.info(f"[RAG] retrieve() start — query length: {len(query)} chars")
+
+    # Stage 1: ChromaDB client + collection
+    t_db = time.perf_counter()
     client = chromadb.PersistentClient(path=str(CHROMA_DIR))
     try:
         collection = client.get_collection(CHROMA_COLLECTION)
     except Exception:
-        logger.warning("[RAG] Vector store collection not found — returning empty results.")
+        logger.warning(f"[RAG] Vector store not found ({time.perf_counter()-t_db:.2f}s) — returning empty.")
         return []
 
     if collection.count() == 0:
         logger.warning("[RAG] Vector store is empty — returning empty results.")
         return []
+    logger.info(f"[RAG] ChromaDB ready ({time.perf_counter()-t_db:.2f}s), {collection.count()} chunks")
 
-    embedding_model = _get_embedding_model()  # Singleton — no reload on every call
+    # Stage 2: Embedding model load (singleton — fast after first call)
+    t_model = time.perf_counter()
+    embedding_model = _get_embedding_model()
+    logger.info(f"[RAG] Embedding model ready ({time.perf_counter()-t_model:.2f}s)")
+
+    # Stage 3: Encode query
+    t_enc = time.perf_counter()
     query_embedding = embedding_model.encode(query).tolist()
+    logger.info(f"[RAG] Query encoded ({time.perf_counter()-t_enc:.2f}s)")
 
+    # Stage 4: Vector search
+    t_search = time.perf_counter()
     results = collection.query(
         query_embeddings=[query_embedding],
         n_results=min(n_results, collection.count()),
         include=["documents", "metadatas", "distances"],
     )
+    logger.info(f"[RAG] Vector search done ({time.perf_counter()-t_search:.2f}s), {len(results['documents'][0])} results")
 
     passages = []
     for doc, meta, dist in zip(
@@ -190,6 +264,8 @@ def retrieve(query: str, n_results: int = RAG_N_RESULTS) -> List[Dict]:
             "chunk": meta.get("chunk", 0),
             "distance": round(float(dist), 4),
         })
+
+    logger.info(f"[RAG] retrieve() total: {time.perf_counter()-t0:.2f}s")
     return passages
 
 
@@ -202,32 +278,47 @@ def _call_llm(prompt: str) -> Optional[str]:
     elif LLM_PROVIDER == "ollama":
         return _call_ollama(prompt)
     else:
-        logger.error(f"Unknown LLM_PROVIDER: {LLM_PROVIDER}")
+        logger.error(f"[RAG] Unknown LLM_PROVIDER: {LLM_PROVIDER}")
         return None
 
 
 def _call_openrouter(prompt: str) -> Optional[str]:
-    """Call OpenRouter API."""
+    """
+    Call OpenRouter API with explicit connect + read timeouts.
+    Returns None (graceful degradation) on any failure.
+    Never logs the API key.
+    """
     if not OPENROUTER_API_KEY:
-        logger.info("[RAG] OPENROUTER_API_KEY not set — LLM unavailable.")
+        logger.info("[RAG] OPENROUTER_API_KEY not set — LLM unavailable, returning passages only.")
         return None
+
+    t0 = time.perf_counter()
+    logger.info(f"[RAG] OpenRouter request starting (model={OPENROUTER_MODEL}, read_timeout={OPENROUTER_READ_TIMEOUT}s)")
     try:
         from openai import OpenAI
-        client = OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL)
+        client = OpenAI(
+            api_key=OPENROUTER_API_KEY,
+            base_url=OPENROUTER_BASE_URL,
+            timeout=OPENROUTER_READ_TIMEOUT,  # applies to both connect and read
+        )
         response = client.chat.completions.create(
             model=OPENROUTER_MODEL,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=800,
             temperature=0.3,
         )
-        return response.choices[0].message.content
+        answer = response.choices[0].message.content
+        logger.info(f"[RAG] OpenRouter responded in {time.perf_counter()-t0:.2f}s ({len(answer)} chars)")
+        return answer
     except Exception as e:
-        logger.error(f"OpenRouter API error: {e}")
+        logger.error(f"[RAG] OpenRouter error after {time.perf_counter()-t0:.2f}s: {type(e).__name__}: {e}")
         return None
 
 
 def _call_ollama(prompt: str) -> Optional[str]:
-    """Call Ollama local API."""
+    """Call Ollama local API with a 60s timeout."""
+    t0 = time.perf_counter()
+    logger.info(f"[RAG] Ollama request starting (model={OLLAMA_MODEL})")
     try:
         import httpx
         response = httpx.post(
@@ -236,9 +327,11 @@ def _call_ollama(prompt: str) -> Optional[str]:
             timeout=60.0,
         )
         response.raise_for_status()
-        return response.json().get("response", "")
+        answer = response.json().get("response", "")
+        logger.info(f"[RAG] Ollama responded in {time.perf_counter()-t0:.2f}s")
+        return answer
     except Exception as e:
-        logger.error(f"Ollama API error: {e}")
+        logger.error(f"[RAG] Ollama error after {time.perf_counter()-t0:.2f}s: {type(e).__name__}: {e}")
         return None
 
 
@@ -252,23 +345,32 @@ def ask(
     """
     Answer a maintenance question using RAG.
 
-    Loads embedding model and Chroma lazily on first call.
+    Timing logs emitted at each stage:
+      [RAG] ask() start
+      [RAG] retrieve() start / done
+      [RAG] OpenRouter request / response
+      [RAG] ask() total: Xs
+
     Gracefully degrades if vector store or LLM is unavailable.
     """
-    start = time.perf_counter()
+    t0 = time.perf_counter()
+    logger.info(f"[RAG] ask() start — question length: {len(question)} chars")
 
-    # Retrieve evidence (lazy-loads embedding model on first call)
+    # Stage 1: Retrieve evidence
     try:
         passages = retrieve(question)
     except Exception as e:
-        logger.error(f"[RAG] retrieve() failed: {e}")
+        logger.error(f"[RAG] retrieve() failed: {type(e).__name__}: {e}")
         passages = []
+
+    t_retrieved = time.perf_counter()
+    logger.info(f"[RAG] Retrieved {len(passages)} passages in {t_retrieved-t0:.2f}s")
 
     evidence_text = "\n\n---\n\n".join(
         [f"[Source: {p['source']}, chunk {p['chunk']}]\n{p['text']}" for p in passages]
     )
 
-    # Build context blocks
+    # Stage 2: Build context blocks
     context_blocks = []
     if prediction_context:
         pred = prediction_context
@@ -305,8 +407,13 @@ USER QUESTION: {question}
 
 ANSWER:"""
 
+    # Stage 3: LLM call
+    t_llm = time.perf_counter()
     llm_answer = _call_llm(prompt)
-    latency = (time.perf_counter() - start) * 1000
+    logger.info(f"[RAG] LLM stage done in {time.perf_counter()-t_llm:.2f}s, available={llm_answer is not None}")
+
+    latency = (time.perf_counter() - t0) * 1000
+    logger.info(f"[RAG] ask() total: {latency/1000:.2f}s")
 
     if llm_answer is None:
         if passages:
