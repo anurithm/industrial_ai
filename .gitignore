@@ -25,9 +25,10 @@ data/raw/*.zip
 data/*.db
 *.db
 
-# Models (exclude large binary artifacts)
-models/*.pkl
-models/*.joblib
+# Models — .joblib files are committed (all < 5 MB, needed for cloud deployment)
+# Only exclude very large raw pickle dumps if you create them
+# models/*.pkl
+# models/*.joblib
 
 # ChromaDB
 chroma_db/

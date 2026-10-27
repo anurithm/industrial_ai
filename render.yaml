@@ -1,0 +1,36 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# render.yaml — Render Blueprint for IndustrialAI FastAPI backend
+# Docs: https://render.com/docs/blueprint-spec
+#
+# Usage: Connect your GitHub repo on render.com and this file is auto-detected.
+# ─────────────────────────────────────────────────────────────────────────────
+services:
+  - type: web
+    name: industrialai-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    # Render free tier — spins down after 15 min inactivity, wakes on request
+    plan: free
+
+    # Environment variables — set secret values in Render dashboard, not here
+    envVars:
+      - key: PORT
+        value: "10000"           # Render requires port 10000 for web services
+
+      # CORS: lock this to your Streamlit app URL after first deploy
+      # e.g. https://your-app-name.streamlit.app
+      # Use * during testing, then tighten after you have the URL
+      - key: CORS_ORIGINS
+        value: "*"
+
+      # LLM (optional — only needed for GenAI assistant)
+      - key: LLM_PROVIDER
+        value: openrouter
+      - key: OPENROUTER_MODEL
+        value: meta-llama/llama-3.1-8b-instruct:free
+      - key: OPENROUTER_API_KEY
+        sync: false              # Set this manually in Render dashboard (secret)
+
+      # Model version
+      - key: MODEL_VERSION
+        value: "1.0.0"

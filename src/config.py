@@ -54,8 +54,14 @@ MIN_SAMPLES_PER_CLASS = 10
 
 # API configuration
 API_HOST = os.getenv("API_HOST", "0.0.0.0")
-API_PORT = int(os.getenv("API_PORT", "8000"))
+API_PORT = int(os.getenv("PORT", os.getenv("API_PORT", "8000")))  # PORT is injected by Render
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
+
+# CORS — comma-separated list of allowed origins.
+# Default: "*" (open, for local dev and testing).
+# Production: set CORS_ORIGINS="https://your-app.streamlit.app" in Render env vars.
+_cors_raw = os.getenv("CORS_ORIGINS", "*")
+CORS_ORIGINS = [o.strip() for o in _cors_raw.split(",") if o.strip()]
 
 # Database
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DATA_DIR}/predictions.db")

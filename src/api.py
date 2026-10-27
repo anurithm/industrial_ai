@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
-from src.config import MODEL_VERSION, API_HOST, API_PORT
+from src.config import MODEL_VERSION, API_HOST, API_PORT, CORS_ORIGINS
 from src.database import init_db, get_db, save_prediction, get_history
 from src.predict import predict, models_ready, load_components as _preload_model
 from src.anomaly_detection import detect_anomaly, load_anomaly_detector as _preload_anomaly
@@ -141,7 +141,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
