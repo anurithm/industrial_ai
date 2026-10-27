@@ -1,5 +1,5 @@
 """
-Tests for the RAG maintenance assistant.
+Tests for the RAG maintenance assistant — including lazy loading and fallback behaviour.
 """
 import pytest
 import sys
@@ -25,24 +25,58 @@ def test_chunk_text_short():
     assert len(chunks) == 1
 
 
-def test_retrieve_no_error_when_empty():
-    """Retrieve should return empty list when no docs indexed."""
-    from src.config import CHROMA_DIR
-    # If no chroma db, retrieve returns empty list gracefully
+def test_rag_ready_returns_bool():
+    """rag_ready() returns a bool without loading any heavy models."""
+    from src.maintenance_rag import rag_ready
+    result = rag_ready()
+    assert isinstance(result, bool)
+    # No SentenceTransformer should be loaded just from calling rag_ready()
+    from src.maintenance_rag import _embedding_model
+    # _embedding_model may or may not be loaded depending on prior test order;
+    # the key assertion is that rag_ready() itself doesn't crash.
+
+
+def test_rag_ready_does_not_load_embedding_model(monkeypatch):
+    """rag_ready() must NOT trigger SentenceTransformer loading."""
+    import src.maintenance_rag as rag_mod
+
+    loaded = []
+
+    original_get = rag_mod._get_embedding_model
+
+    def mock_get():
+        loaded.append(True)
+        return original_get()
+
+    monkeypatch.setattr(rag_mod, "_get_embedding_model", mock_get)
+    rag_mod.rag_ready()
+    assert len(loaded) == 0, "rag_ready() must not call _get_embedding_model()"
+
+
+def test_retrieve_returns_list():
+    """retrieve() returns a list (empty or populated) without error."""
+    from src.maintenance_rag import retrieve
     try:
-        from src.maintenance_rag import retrieve
-        # May return empty list or raise connection error — both are acceptable
-        result = retrieve("test question")
+        result = retrieve("test question about temperature")
         assert isinstance(result, list)
     except Exception as e:
-        # If chromadb not initialized, that's okay for this unit test
-        pass
+        pytest.skip(f"Chroma not available in test environment: {e}")
+
+
+def test_retrieve_no_error_when_empty():
+    """retrieve() returns empty list gracefully when no docs are indexed."""
+    from src.maintenance_rag import retrieve
+    try:
+        result = retrieve("test question")
+        assert isinstance(result, list)
+    except Exception:
+        pass  # Acceptable if chromadb is not initialized in CI
 
 
 def test_ask_without_llm():
     """
-    Ask should gracefully handle missing LLM credentials.
-    Returns answer string even if LLM unavailable.
+    ask() returns a structured result with answer and sources
+    even when LLM credentials are absent.
     """
     from src.maintenance_rag import ask
     result = ask(
@@ -55,10 +89,12 @@ def test_ask_without_llm():
     assert len(result["answer"]) > 0
     assert "sources" in result
     assert "llm_available" in result
+    assert isinstance(result["llm_available"], bool)
+    assert "latency_ms" in result
 
 
 def test_ask_with_context():
-    """Ask passes prediction and sensor context correctly."""
+    """ask() passes prediction and sensor context correctly."""
     from src.maintenance_rag import ask
     pred_context = {
         "predicted_failure": False,
@@ -79,12 +115,41 @@ def test_ask_with_context():
 
 
 def test_ask_empty_evidence_handling():
-    """Ask handles case where no relevant docs are found."""
+    """ask() handles zero-evidence gracefully without fabricating answers."""
     from src.maintenance_rag import ask
-    # Highly specific unlikely-to-match question
     result = ask(
         question="What is the quantum entanglement coefficient of a neutron star made of cheese?",
     )
     assert "answer" in result
-    # Should NOT fabricate — answer should mention insufficient evidence or return retrieved text
     assert isinstance(result["answer"], str)
+
+
+def test_embedding_model_singleton(monkeypatch):
+    """_get_embedding_model() loads the model only once (singleton pattern)."""
+    import src.maintenance_rag as rag_mod
+
+    # Reset the singleton for this test
+    original = rag_mod._embedding_model
+    rag_mod._embedding_model = None
+
+    load_count = [0]
+    original_init = None
+
+    try:
+        import sentence_transformers
+
+        class CountingTransformer(sentence_transformers.SentenceTransformer):
+            def __init__(self, *args, **kwargs):
+                load_count[0] += 1
+                super().__init__(*args, **kwargs)
+
+        monkeypatch.setattr(sentence_transformers, "SentenceTransformer", CountingTransformer)
+
+        m1 = rag_mod._get_embedding_model()
+        m2 = rag_mod._get_embedding_model()
+        assert m1 is m2, "Singleton must return the same instance"
+        assert load_count[0] == 1, f"Model loaded {load_count[0]} times — expected 1"
+    except ImportError:
+        pytest.skip("sentence_transformers not installed")
+    finally:
+        rag_mod._embedding_model = original

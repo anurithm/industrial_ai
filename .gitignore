@@ -30,8 +30,9 @@ data/*.db
 # models/*.pkl
 # models/*.joblib
 
-# ChromaDB
-chroma_db/
+# ChromaDB — pre-built vector store committed to Git (needed for cloud deployment)
+# Do NOT add chroma_db/ to .gitignore — Render uses this to avoid building at startup
+# chroma_db/
 
 # Reports (keep structure, exclude generated reports from git if large)
 # reports/

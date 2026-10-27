@@ -1,10 +1,17 @@
 """
 RAG-based Maintenance Assistant using Chroma + Sentence Transformers + LLM.
 Supports OpenRouter and Ollama as LLM providers.
+
+Memory-efficiency notes (Render free tier):
+- SentenceTransformer is loaded lazily on first use and cached as a singleton.
+  It is NOT imported or loaded at module import time or during API startup.
+- Chroma client is also created lazily per call (stateless PersistentClient).
+- Use rag_ready() to check availability without loading anything heavy.
 """
 import logging
 import time
 from pathlib import Path
+from threading import Lock
 from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -16,6 +23,48 @@ from src.config import (
     OLLAMA_BASE_URL, OLLAMA_MODEL,
 )
 
+# ── Lazy singleton for the embedding model ────────────────────────────────────
+# Loading SentenceTransformer uses ~300 MB RAM. We load it once on demand and
+# cache it for the lifetime of the process — never at module import time.
+_embedding_model = None
+_embedding_model_lock = Lock()
+
+
+def _get_embedding_model():
+    """Return the cached SentenceTransformer, loading it once on first call."""
+    global _embedding_model
+    if _embedding_model is None:
+        with _embedding_model_lock:
+            if _embedding_model is None:
+                logger.info(f"[RAG] Loading embedding model '{EMBEDDING_MODEL}' (first use) ...")
+                from sentence_transformers import SentenceTransformer
+                _embedding_model = SentenceTransformer(EMBEDDING_MODEL)
+                logger.info("[RAG] Embedding model loaded and cached.")
+    return _embedding_model
+
+
+def rag_ready() -> bool:
+    """
+    Check if the Chroma vector store exists and has data — WITHOUT loading
+    any heavy models. Safe to call from /health at startup.
+    """
+    db_path = CHROMA_DIR / "chroma.sqlite3"
+    if not db_path.exists():
+        return False
+    try:
+        import chromadb
+        client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+        existing = [c.name for c in client.list_collections()]
+        if CHROMA_COLLECTION not in existing:
+            return False
+        col = client.get_collection(CHROMA_COLLECTION)
+        return col.count() > 0
+    except Exception as e:
+        logger.debug(f"[RAG] rag_ready() check failed: {e}")
+        return False
+
+
+# ── Text utilities ────────────────────────────────────────────────────────────
 
 def _chunk_text(text: str, chunk_size: int = RAG_CHUNK_SIZE, overlap: int = RAG_CHUNK_OVERLAP) -> List[str]:
     """Split text into overlapping chunks."""
@@ -45,31 +94,38 @@ def _load_document(path: Path) -> str:
     return ""
 
 
+# ── Vector store ──────────────────────────────────────────────────────────────
+
 def build_vector_store(force_rebuild: bool = False):
     """
     Ingest maintenance documents into Chroma vector database.
     Idempotent: skips if collection exists and force_rebuild is False.
+
+    Run this locally then commit chroma_db/ to Git so Render never
+    needs to build it at runtime (saves ~300 MB startup RAM).
     """
     import chromadb
-    from sentence_transformers import SentenceTransformer
 
     client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-
     existing = [c.name for c in client.list_collections()]
+
     if CHROMA_COLLECTION in existing and not force_rebuild:
-        logger.info(f"Collection '{CHROMA_COLLECTION}' already exists. Skipping rebuild.")
+        logger.info(f"[RAG] Collection '{CHROMA_COLLECTION}' already exists. Skipping rebuild.")
         return client.get_collection(CHROMA_COLLECTION)
 
     if CHROMA_COLLECTION in existing:
         client.delete_collection(CHROMA_COLLECTION)
 
     collection = client.create_collection(CHROMA_COLLECTION)
-    logger.info(f"Loading embedding model: {EMBEDDING_MODEL}")
-    embedding_model = SentenceTransformer(EMBEDDING_MODEL)
+    embedding_model = _get_embedding_model()  # Uses the singleton
 
-    doc_files = list(DOCS_DIR.glob("*.txt")) + list(DOCS_DIR.glob("*.md")) + list(DOCS_DIR.glob("*.pdf"))
+    doc_files = (
+        list(DOCS_DIR.glob("*.txt"))
+        + list(DOCS_DIR.glob("*.md"))
+        + list(DOCS_DIR.glob("*.pdf"))
+    )
     if not doc_files:
-        logger.warning(f"No documents found in {DOCS_DIR}")
+        logger.warning(f"[RAG] No documents found in {DOCS_DIR}")
         return collection
 
     for doc_path in doc_files:
@@ -77,7 +133,7 @@ def build_vector_store(force_rebuild: bool = False):
         if not text.strip():
             continue
         chunks = _chunk_text(text)
-        logger.info(f"Indexing {doc_path.name}: {len(chunks)} chunks")
+        logger.info(f"[RAG] Indexing {doc_path.name}: {len(chunks)} chunks")
         for i, chunk in enumerate(chunks):
             embedding = embedding_model.encode(chunk).tolist()
             collection.add(
@@ -87,31 +143,33 @@ def build_vector_store(force_rebuild: bool = False):
                 metadatas=[{"source": doc_path.name, "chunk": i}],
             )
 
-    logger.info(f"Vector store built: {collection.count()} chunks indexed")
+    logger.info(f"[RAG] Vector store built: {collection.count()} chunks indexed")
     return collection
 
 
 def retrieve(query: str, n_results: int = RAG_N_RESULTS) -> List[Dict]:
     """
     Retrieve relevant document chunks for a query.
+    Loads the embedding model lazily (singleton — loaded once, cached).
 
     Returns:
         List of passages with text, source, and relevance score.
+        Returns empty list if vector store is unavailable.
     """
     import chromadb
-    from sentence_transformers import SentenceTransformer
 
     client = chromadb.PersistentClient(path=str(CHROMA_DIR))
     try:
         collection = client.get_collection(CHROMA_COLLECTION)
     except Exception:
-        logger.warning("Vector store not found. Building now...")
-        collection = build_vector_store()
-
-    if collection.count() == 0:
+        logger.warning("[RAG] Vector store collection not found — returning empty results.")
         return []
 
-    embedding_model = SentenceTransformer(EMBEDDING_MODEL)
+    if collection.count() == 0:
+        logger.warning("[RAG] Vector store is empty — returning empty results.")
+        return []
+
+    embedding_model = _get_embedding_model()  # Singleton — no reload on every call
     query_embedding = embedding_model.encode(query).tolist()
 
     results = collection.query(
@@ -135,6 +193,8 @@ def retrieve(query: str, n_results: int = RAG_N_RESULTS) -> List[Dict]:
     return passages
 
 
+# ── LLM calls ─────────────────────────────────────────────────────────────────
+
 def _call_llm(prompt: str) -> Optional[str]:
     """Call the configured LLM provider."""
     if LLM_PROVIDER == "openrouter":
@@ -149,6 +209,7 @@ def _call_llm(prompt: str) -> Optional[str]:
 def _call_openrouter(prompt: str) -> Optional[str]:
     """Call OpenRouter API."""
     if not OPENROUTER_API_KEY:
+        logger.info("[RAG] OPENROUTER_API_KEY not set — LLM unavailable.")
         return None
     try:
         from openai import OpenAI
@@ -181,6 +242,8 @@ def _call_ollama(prompt: str) -> Optional[str]:
         return None
 
 
+# ── Main ask function ─────────────────────────────────────────────────────────
+
 def ask(
     question: str,
     prediction_context: Optional[Dict] = None,
@@ -189,18 +252,18 @@ def ask(
     """
     Answer a maintenance question using RAG.
 
-    Args:
-        question: User question
-        prediction_context: Current ML prediction result
-        sensor_context: Current sensor readings
-
-    Returns:
-        dict with answer, passages, citations, and metadata.
+    Loads embedding model and Chroma lazily on first call.
+    Gracefully degrades if vector store or LLM is unavailable.
     """
     start = time.perf_counter()
 
-    # Retrieve evidence
-    passages = retrieve(question)
+    # Retrieve evidence (lazy-loads embedding model on first call)
+    try:
+        passages = retrieve(question)
+    except Exception as e:
+        logger.error(f"[RAG] retrieve() failed: {e}")
+        passages = []
+
     evidence_text = "\n\n---\n\n".join(
         [f"[Source: {p['source']}, chunk {p['chunk']}]\n{p['text']}" for p in passages]
     )
@@ -223,7 +286,6 @@ def ask(
 
     ml_context = "\n\n".join(context_blocks)
 
-    # Build prompt
     prompt = f"""You are an industrial maintenance assistant. Answer the user's question using ONLY the provided maintenance documentation and ML prediction context.
 
 MAINTENANCE DOCUMENTATION (retrieved passages):
@@ -247,7 +309,6 @@ ANSWER:"""
     latency = (time.perf_counter() - start) * 1000
 
     if llm_answer is None:
-        # Graceful degradation: return retrieved passages without LLM synthesis
         if passages:
             fallback_answer = (
                 "LLM service is currently unavailable. "
@@ -269,7 +330,6 @@ ANSWER:"""
             "question": question,
         }
 
-    # Extract citations from answer
     citations = list({p["source"] for p in passages if p["source"] in llm_answer or len(passages) > 0})
 
     return {

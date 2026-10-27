@@ -102,6 +102,7 @@ class HealthResponse(BaseModel):
     status: str
     model_ready: bool
     anomaly_ready: bool
+    rag_available: bool
     timestamp: str
     model_version: str
 
@@ -151,14 +152,14 @@ app.add_middleware(
 
 @app.get("/health", response_model=HealthResponse, tags=["System"])
 async def health_check():
-    """Check API and model health."""
+    """Check API and model health. Safe to call at any time — loads no heavy models."""
     from src.anomaly_detection import ANOMALY_MODEL_PATH
-    from src.config import MODELS_DIR
-    anomaly_ready = ANOMALY_MODEL_PATH.exists()
+    from src.maintenance_rag import rag_ready
     return HealthResponse(
         status="ok",
         model_ready=models_ready(),
-        anomaly_ready=anomaly_ready,
+        anomaly_ready=ANOMALY_MODEL_PATH.exists(),
+        rag_available=rag_ready(),
         timestamp=datetime.now(timezone.utc).isoformat(),
         model_version=MODEL_VERSION,
     )
@@ -272,7 +273,8 @@ async def maintenance_ask(request: MaintenanceQuestion):
     Ask the GenAI maintenance assistant a question.
 
     Uses RAG with Chroma + Sentence Transformers. LLM optional.
-    Gracefully degrades if LLM is unavailable.
+    Embedding model loads lazily on first call (~300 MB, takes a few seconds).
+    Gracefully degrades if vector store or LLM is unavailable.
     """
     try:
         from src.maintenance_rag import ask
@@ -281,9 +283,20 @@ async def maintenance_ask(request: MaintenanceQuestion):
             prediction_context=request.prediction_context,
             sensor_context=request.sensor_context,
         )
-    except Exception as e:
-        logger.error(f"RAG error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except (MemoryError, Exception) as e:
+        logger.error(f"RAG error: {type(e).__name__}: {e}")
+        # Return a graceful fallback instead of a 500 crash
+        result = {
+            "question": request.question,
+            "answer": (
+                "The RAG assistant encountered an error and could not process your question. "
+                f"Error: {type(e).__name__}. "
+                "This may be a temporary memory issue on the free hosting tier. Please retry."
+            ),
+            "sources": [],
+            "llm_available": False,
+            "latency_ms": 0.0,
+        }
 
     return MaintenanceAnswer(
         question=result["question"],
