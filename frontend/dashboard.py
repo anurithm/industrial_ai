@@ -22,7 +22,18 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
-API_BASE = os.getenv("API_BASE_URL", "http://localhost:8000")
+# Resolve API base URL: Streamlit Cloud secrets → env var → local default
+def _get_api_base() -> str:
+    try:
+        # st.secrets is available on Streamlit Cloud or with a local secrets.toml
+        url = st.secrets.get("API_BASE_URL", "")
+        if url:
+            return url.rstrip("/")
+    except Exception:
+        pass
+    return os.getenv("API_BASE_URL", "http://localhost:8000")
+
+API_BASE = _get_api_base()
 API_TIMEOUT = 30
 REPORTS_DIR = Path(__file__).parent.parent / "reports"
 PROCESSED_DIR = Path(__file__).parent.parent / "data" / "processed"
@@ -97,14 +108,28 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 
 
 # ── API helpers ───────────────────────────────────────────────────────────────
+_API_OFFLINE_SHOWN = False  # module-level flag to avoid spamming the banner
+
+
+def _show_offline_banner():
+    """Show a one-time demo-mode banner when the API is unreachable."""
+    st.markdown(
+        '<div class="warning-box">'
+        '🌐 <strong>Demo Mode</strong> — The prediction API is not connected. '
+        'Static pages (Overview metrics, Model Performance, Project Info) work fully. '
+        'Interactive pages (Predict, Anomaly, Explain, GenAI) require the FastAPI backend. '
+        'See README for deployment options.</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def api_get(endpoint: str) -> Optional[Dict]:
     try:
         r = requests.get(f"{API_BASE}{endpoint}", timeout=API_TIMEOUT)
         r.raise_for_status()
         return r.json()
     except requests.ConnectionError:
-        st.error(f"❌ Cannot connect to API at {API_BASE}. Is the server running?")
-        return None
+        return None  # Handled gracefully by callers; banner shown in sidebar
     except Exception as e:
         st.error(f"❌ API error: {e}")
         return None
@@ -116,7 +141,7 @@ def api_post(endpoint: str, payload: Dict) -> Optional[Dict]:
         r.raise_for_status()
         return r.json()
     except requests.ConnectionError:
-        st.error(f"❌ Cannot connect to API at {API_BASE}. Is the server running?")
+        _show_offline_banner()
         return None
     except requests.HTTPError as e:
         try:
@@ -190,7 +215,11 @@ with st.sidebar:
                 "✅" if health.get("anomaly_ready") else "⚠️ Not trained"
             )
     else:
-        st.markdown('<span class="status-error">✗ API Offline</span>', unsafe_allow_html=True)
+        st.markdown(
+            '<span class="status-error">✗ API Offline</span>',
+            unsafe_allow_html=True,
+        )
+        st.caption("Static pages still work. See README.")
 
     st.divider()
 

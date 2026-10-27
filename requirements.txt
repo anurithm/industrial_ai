@@ -1,3 +1,11 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# requirements.txt — Streamlit Dashboard + ML inference
+# Used by: Streamlit Community Cloud build, local dashboard runs
+#
+# For the local FastAPI backend, also install requirements_api.txt:
+#   pip install -r requirements.txt -r requirements_api.txt
+# ─────────────────────────────────────────────────────────────────────────────
+
 # Core ML
 scikit-learn>=1.3.0
 xgboost>=2.0.0
@@ -8,22 +16,13 @@ joblib>=1.3.0
 # Explainability
 shap>=0.44.0
 
-# Anomaly Detection (via scikit-learn IsolationForest)
-
 # GenAI / RAG
 sentence-transformers>=2.2.0
 chromadb>=0.4.0
 openai>=1.0.0
 
-# API
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
+# Pydantic (shared by dashboard imports via src/)
 pydantic>=2.4.0
-pydantic-settings>=2.0.0
-python-multipart>=0.0.6
-
-# Database
-sqlalchemy>=2.0.0
 
 # Frontend
 streamlit>=1.28.0
@@ -34,17 +33,12 @@ matplotlib>=3.7.0
 httpx>=0.25.0
 requests>=2.31.0
 
-# Data download
+# Data download (for train pipeline)
 ucimlrepo>=0.0.3
 
 # Utilities
 python-dotenv>=1.0.0
 PyYAML>=6.0.0
-
-# Testing
-pytest>=7.4.0
-pytest-asyncio>=0.21.0
-httpx>=0.25.0
 
 # PDF support for RAG
 pypdf>=3.17.0

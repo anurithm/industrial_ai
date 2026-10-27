@@ -3,6 +3,9 @@
 .env.local
 .env.*.local
 
+# Streamlit secrets — NEVER commit real secrets
+.streamlit/secrets.toml
+
 # Virtual environment
 .venv/
 venv/
