@@ -1,0 +1,5 @@
+{
+  "threshold": 0.7488278150558472,
+  "model_name": "xgboost",
+  "model_version": "1.0.0"
+}

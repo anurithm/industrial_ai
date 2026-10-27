@@ -1,0 +1,55 @@
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+.pytest_cache/
+.mypy_cache/
+
+# Data (keep raw/ and processed/ dirs, exclude large files)
+data/raw/*.csv
+data/raw/*.zip
+data/*.db
+*.db
+
+# Models (exclude large binary artifacts)
+models/*.pkl
+models/*.joblib
+
+# ChromaDB
+chroma_db/
+
+# Reports (keep structure, exclude generated reports from git if large)
+# reports/
+
+# Logs
+*.log
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+__MACOSX/
+
+# Node (if any frontend tooling)
+node_modules/
+
+# Secrets and keys
+*.pem
+*.key
+*.p12

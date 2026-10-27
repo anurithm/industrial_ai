@@ -1,0 +1,85 @@
+{
+  "model_comparison": {
+    "logistic_regression": {
+      "accuracy": 0.9566666666666667,
+      "precision": 0.37037037037037035,
+      "recall": 0.39215686274509803,
+      "f1_score": 0.38095238095238093,
+      "true_positives": 20,
+      "false_positives": 34,
+      "true_negatives": 1415,
+      "false_negatives": 31,
+      "confusion_matrix": [
+        [
+          1415,
+          34
+        ],
+        [
+          31,
+          20
+        ]
+      ],
+      "inference_latency_ms": 0.0,
+      "roc_auc": 0.8401466866940013,
+      "pr_auc": 0.3081873265638585,
+      "threshold": 0.8755769250420558,
+      "model_name": "logistic_regression",
+      "n_val": 1500
+    },
+    "random_forest": {
+      "accuracy": 0.9766666666666667,
+      "precision": 0.66,
+      "recall": 0.6470588235294118,
+      "f1_score": 0.6534653465346535,
+      "true_positives": 33,
+      "false_positives": 17,
+      "true_negatives": 1432,
+      "false_negatives": 18,
+      "confusion_matrix": [
+        [
+          1432,
+          17
+        ],
+        [
+          18,
+          33
+        ]
+      ],
+      "inference_latency_ms": 0.008,
+      "roc_auc": 0.9391196091963355,
+      "pr_auc": 0.6027184031537842,
+      "threshold": 0.5732849337492376,
+      "model_name": "random_forest",
+      "n_val": 1500
+    },
+    "xgboost": {
+      "accuracy": 0.9826666666666667,
+      "precision": 0.8205128205128205,
+      "recall": 0.6274509803921569,
+      "f1_score": 0.7111111111111111,
+      "true_positives": 32,
+      "false_positives": 7,
+      "true_negatives": 1442,
+      "false_negatives": 19,
+      "confusion_matrix": [
+        [
+          1442,
+          7
+        ],
+        [
+          19,
+          32
+        ]
+      ],
+      "inference_latency_ms": 0.001,
+      "roc_auc": 0.9406081273088945,
+      "pr_auc": 0.7451223042973044,
+      "threshold": 0.7488278150558472,
+      "model_name": "xgboost",
+      "n_val": 1500
+    }
+  },
+  "best_model": "xgboost",
+  "model_version": "1.0.0",
+  "xgboost_available": true
+}

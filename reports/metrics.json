@@ -1,0 +1,28 @@
+{
+  "accuracy": 0.9906666666666667,
+  "precision": 0.8775510204081632,
+  "recall": 0.8431372549019608,
+  "f1_score": 0.86,
+  "true_positives": 43,
+  "false_positives": 6,
+  "true_negatives": 1443,
+  "false_negatives": 8,
+  "confusion_matrix": [
+    [
+      1443,
+      6
+    ],
+    [
+      8,
+      43
+    ]
+  ],
+  "inference_latency_ms": 0.0,
+  "roc_auc": 0.9896074371777696,
+  "pr_auc": 0.9055986743230404,
+  "threshold": 0.7488278150558472,
+  "model_name": "xgboost",
+  "model_version": "1.0.0",
+  "n_test": 1500,
+  "dataset": "AI4I 2020 Predictive Maintenance (UCI) \u2014 synthetic"
+}
