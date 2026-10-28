@@ -14,6 +14,11 @@
 
 IndustrialAI is an end-to-end industrial predictive maintenance platform that uses **machine learning** to predict machine failure risk, **Isolation Forest anomaly detection** to identify unusual sensor patterns, **SHAP explainable AI** to interpret predictions, and a **retrieval-augmented GenAI assistant** to answer maintenance questions using technical documentation.
 
+## 📎 Live Demo
+
+https://industrialai-ai.streamlit.app/
+
+
 ### Key Features
 
 | Capability | Implementation |
