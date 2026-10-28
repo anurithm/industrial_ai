@@ -240,7 +240,6 @@ pytest tests/ -v
 Interactive API docs: **http://localhost:8000/docs**
 
 ---
-
 ## 📄 License
 
 This project is released under the MIT License.
