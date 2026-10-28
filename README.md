@@ -18,7 +18,6 @@ IndustrialAI is an end-to-end industrial predictive maintenance platform that us
 
 https://industrialai-ai.streamlit.app/
 
-
 ### Key Features
 
 | Capability | Implementation |
@@ -242,13 +241,6 @@ Interactive API docs: **http://localhost:8000/docs**
 
 ---
 
-## ⚠️ Disclaimers
-
-> **IMPORTANT:** This project uses the UCI AI4I 2020 dataset, which is **synthetic data** generated to resemble real industrial sensor readings. All predictions are probabilistic estimates from a model trained on synthetic data. Do NOT treat outputs as confirmation of actual machine failure without independent verification.
-
-> The maintenance documentation in `docs/maintenance/` is **illustrative sample content** created for demonstration purposes and is NOT approved manufacturer guidance.
-
----
 
 ## 📄 License
 
