@@ -12,18 +12,15 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt requirements_api.txt ./
 RUN pip install --no-cache-dir -r requirements.txt -r requirements_api.txt
 
-# ── Pre-download the SentenceTransformer model at image build time ─────────────
-# This is the most important step for Render free tier performance.
-# Without this, the first /maintenance/ask call downloads ~90MB from HuggingFace
-# at runtime, which takes 2–5 minutes and causes the 120s dashboard timeout.
-# Baking the model into the image means it's available immediately at startup.
-ENV SENTENCE_TRANSFORMERS_HOME=/app/.sentence_transformers
+# ── Pre-download the ONNX embedding model at image build time ─────────────────
+# ChromaDB's ONNXMiniLM_L6_V2 downloads the ONNX model weights (~23 MB) on
+# first use. We bake it into the image so there's no network call at runtime.
+# RAM cost: ~80 MB (vs ~380 MB for sentence-transformers + PyTorch).
 RUN python -c "\
-import os; \
-os.environ.setdefault('SENTENCE_TRANSFORMERS_HOME', '/app/.sentence_transformers'); \
-from sentence_transformers import SentenceTransformer; \
-m = SentenceTransformer('all-MiniLM-L6-v2'); \
-print('Model pre-downloaded OK, embedding dim:', m.get_sentence_embedding_dimension()) \
+from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2; \
+ef = ONNXMiniLM_L6_V2(); \
+result = ef(['model warmup test']); \
+print('ONNX EF ready, embedding dim:', len(result[0])) \
 "
 
 # Copy application code (includes committed model artifacts and chroma_db)

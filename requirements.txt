@@ -16,10 +16,12 @@ joblib>=1.3.0
 # Explainability
 shap>=0.44.0
 
-# GenAI / RAG
-sentence-transformers>=2.2.0
+# GenAI / RAG — uses ChromaDB's built-in ONNX EF (all-MiniLM-L6-v2 via onnxruntime)
+# sentence-transformers removed: replaced by chromadb.utils.embedding_functions.ONNXMiniLM_L6_V2
+# This eliminates the PyTorch dependency (~300 MB RAM saved on Render free tier)
 chromadb>=0.4.0
 openai>=1.0.0
+
 
 # Pydantic (shared by dashboard imports via src/)
 pydantic>=2.4.0

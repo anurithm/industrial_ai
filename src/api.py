@@ -325,17 +325,16 @@ async def maintenance_warmup():
     import asyncio
     from src.maintenance_rag import _embedding_model_state
 
-    # If already loaded or loading, don't start another thread
     if _embedding_model_state in ("ready", "loading"):
         return {"status": _embedding_model_state, "message": f"Embedding model is {_embedding_model_state}."}
 
     def _warmup():
         try:
-            from src.maintenance_rag import _get_embedding_model
-            _get_embedding_model()
-            logger.info("[warmup] Embedding model ready.")
+            from src.maintenance_rag import _get_embedding_fn
+            _get_embedding_fn()
+            logger.info("[warmup] ONNX EF ready.")
         except Exception as e:
-            logger.warning(f"[warmup] Model pre-load failed (non-fatal): {e}")
+            logger.warning(f"[warmup] EF pre-load failed (non-fatal): {e}")
 
     loop = asyncio.get_event_loop()
     loop.run_in_executor(None, _warmup)
